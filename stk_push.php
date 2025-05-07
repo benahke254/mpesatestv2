@@ -25,7 +25,7 @@ function log_message($message) {
     file_put_contents($log_file, date("Y-m-d H:i:s") . " - " . $message . PHP_EOL, FILE_APPEND);
 }
 
-// Get JSON input
+// Get input data
 $data = json_decode(file_get_contents('php://input'), true);
 
 if (!isset($data['phone']) || !isset($data['amount'])) {
@@ -38,21 +38,22 @@ if (!isset($data['phone']) || !isset($data['amount'])) {
 $phone = sanitize_input($data['phone']);
 $amount = sanitize_input($data['amount']);
 
-// Validate phone number and amount
-if (!preg_match('/^(\+?254|0)?7\d{8}$/', $phone) || !is_numeric($amount)) {
+// Validate phone and amount
+if (!preg_match('/^(\+254|254|0)?7\d{8}$/', $phone) || !is_numeric($amount)) {
     http_response_code(400);
     echo json_encode(['success' => false, 'message' => 'Invalid phone or amount format']);
     log_message("Validation failed - Phone: $phone, Amount: $amount");
     exit;
 }
 
-// Normalize phone to 254 format
+// Normalize phone to 2547XXXXXXXX
 $phone = preg_replace('/^0/', '254', $phone);
 $phone = preg_replace('/^\+/', '', $phone);
 
+// Generate unique checkout ID
 $checkout_id = uniqid('checkout_', true);
 
-// Insert into database
+// Insert into pending payments
 try {
     $stmt = $pdo->prepare("INSERT INTO pendingpayments (checkout_id, phone, amount) VALUES (?, ?, ?)");
     $stmt->execute([$checkout_id, $phone, $amount]);
@@ -63,19 +64,18 @@ try {
     exit;
 }
 
-// Safaricom STK Push credentials
+// Safaricom API credentials
 $shortcode = '174379';
 $consumerKey = 'FcrA6bZbGZfm7XGOsuQGMGQQlnNpYUSVuohKN4cbUBOhr7ml';
 $consumerSecret = 'p30cG1LMM8AzGptCtk8MdtZrSY9R7KQ17r7ibaU6Q2X7n1XG4ijoWsFH7e8J9BkJ';
 $passkey = 'bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919';
 $callbackUrl = 'https://mpesatest-mk71.onrender.com/callback.php';
 
+// Generate access token
 $timestamp = date('YmdHis');
 $password = base64_encode($shortcode . $passkey . $timestamp);
-
 $credentials = base64_encode("$consumerKey:$consumerSecret");
 
-// Get access token
 $token_url = 'https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials';
 
 $ch = curl_init($token_url);
@@ -94,7 +94,7 @@ $result = json_decode($response, true);
 
 if (!isset($result['access_token'])) {
     log_message('Access token missing: ' . $response);
-    echo json_encode(['success' => false, 'message' => 'Access token missing']);
+    echo json_encode(['success' => false, 'message' => 'Access token not received']);
     exit;
 }
 
@@ -144,7 +144,12 @@ if (isset($result['ResponseCode']) && $result['ResponseCode'] == '0') {
         'checkoutRequestID' => $result['CheckoutRequestID']
     ]);
 } else {
-    log_message('STK Push error: ' . json_encode($result));
-    echo json_encode(['success' => false, 'message' => 'STK Push failed', 'error' => $result]);
+    log_message('STK Push failed: ' . json_encode($result));
+    echo json_encode([
+        'success' => false,
+        'message' => 'STK Push failed',
+        'error' => isset($result['errorMessage']) ? $result['errorMessage'] : 'Unknown error',
+        'details' => $result
+    ]);
 }
 ?>
