@@ -14,9 +14,7 @@
       --success: #10b981;
       --danger: #ef4444;
     }
-    * {
-      box-sizing: border-box;
-    }
+    * { box-sizing: border-box; }
     body {
       font-family: 'Inter', sans-serif;
       background: var(--dark);
@@ -200,6 +198,7 @@
     <input type="hidden" name="dst" value="" />
     <input type="hidden" name="popup" value="true" />
   </form>
+
   <script>
     document.addEventListener('DOMContentLoaded', () => {
       const packages = document.querySelectorAll('.package');
@@ -209,30 +208,33 @@
       const phoneNumberInput = document.getElementById('phoneNumber');
       const loading = document.getElementById('loading');
       const success = document.getElementById('success');
-  
+
       let selectedAmount = null;
-  
+
       packages.forEach(pkg => {
         pkg.addEventListener('click', () => {
           selectedAmount = pkg.getAttribute('data-amount');
           modal.style.display = 'flex';
         });
       });
-  
+
       closeModal.addEventListener('click', () => {
         modal.style.display = 'none';
+        loading.style.display = 'none';
+        success.style.display = 'none';
+        phoneNumberInput.value = '';
       });
-  
+
       subscribeBtn.addEventListener('click', () => {
         const phone = phoneNumberInput.value.trim();
         if (!phone) {
           alert('Please enter your phone number.');
           return;
         }
-  
-        // Show loading spinner
+
         loading.style.display = 'block';
-  
+        success.style.display = 'none';
+
         fetch('stk_push.php', {
           method: 'POST',
           headers: {
@@ -240,13 +242,20 @@
           },
           body: JSON.stringify({ phone, amount: selectedAmount })
         })
-        .then(response => response.json())
-        .then(data => {
-          loading.style.display = 'none';
-          if (data.success) {
-            success.style.display = 'block';
-          } else {
-            alert('Payment initiation failed: ' + data.message);
+        .then(async response => {
+          try {
+            const data = await response.json();
+            loading.style.display = 'none';
+
+            if (data.success) {
+              success.style.display = 'block';
+            } else {
+              alert('Payment initiation failed: ' + data.message);
+            }
+          } catch (e) {
+            const text = await response.text();
+            alert('Unexpected server response:\n' + text);
+            loading.style.display = 'none';
           }
         })
         .catch(error => {
@@ -257,4 +266,4 @@
     });
   </script>
 </body>
-</html>  
+</html>

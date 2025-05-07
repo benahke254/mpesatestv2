@@ -5,7 +5,7 @@ header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization");
 
-if ($_SERVER['REQUEST_METHOD'] == 'OPTIONS') {
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
     exit();
 }
@@ -17,31 +17,42 @@ function sanitize_input($data) {
 }
 
 function log_message($message) {
-    $log_file = 'logs/transactions.log';
+    $log_dir = 'logs';
+    if (!file_exists($log_dir)) {
+        mkdir($log_dir, 0777, true);
+    }
+    $log_file = $log_dir . '/transactions.log';
     file_put_contents($log_file, date("Y-m-d H:i:s") . " - " . $message . PHP_EOL, FILE_APPEND);
 }
 
+// Get JSON input
 $data = json_decode(file_get_contents('php://input'), true);
 
 if (!isset($data['phone']) || !isset($data['amount'])) {
     http_response_code(400);
-    echo json_encode(['success' => false, 'message' => 'Invalid input']);
-    log_message('Invalid input received.');
+    echo json_encode(['success' => false, 'message' => 'Missing phone or amount']);
+    log_message('Missing input: ' . json_encode($data));
     exit;
 }
 
 $phone = sanitize_input($data['phone']);
 $amount = sanitize_input($data['amount']);
 
-if (!preg_match('/^\d{10,12}$/', $phone) || !is_numeric($amount)) {
+// Validate phone number and amount
+if (!preg_match('/^(\+?254|0)?7\d{8}$/', $phone) || !is_numeric($amount)) {
     http_response_code(400);
-    echo json_encode(['success' => false, 'message' => 'Invalid phone number or amount format.']);
-    log_message('Invalid phone or amount format: Phone=' . $phone . ', Amount=' . $amount);
+    echo json_encode(['success' => false, 'message' => 'Invalid phone or amount format']);
+    log_message("Validation failed - Phone: $phone, Amount: $amount");
     exit;
 }
 
+// Normalize phone to 254 format
+$phone = preg_replace('/^0/', '254', $phone);
+$phone = preg_replace('/^\+/', '', $phone);
+
 $checkout_id = uniqid('checkout_', true);
 
+// Insert into database
 try {
     $stmt = $pdo->prepare("INSERT INTO pendingpayments (checkout_id, phone, amount) VALUES (?, ?, ?)");
     $stmt->execute([$checkout_id, $phone, $amount]);
@@ -52,6 +63,7 @@ try {
     exit;
 }
 
+// Safaricom STK Push credentials
 $shortcode = '174379';
 $consumerKey = 'FcrA6bZbGZfm7XGOsuQGMGQQlnNpYUSVuohKN4cbUBOhr7ml';
 $consumerSecret = 'p30cG1LMM8AzGptCtk8MdtZrSY9R7KQ17r7ibaU6Q2X7n1XG4ijoWsFH7e8J9BkJ';
@@ -62,27 +74,33 @@ $timestamp = date('YmdHis');
 $password = base64_encode($shortcode . $passkey . $timestamp);
 
 $credentials = base64_encode("$consumerKey:$consumerSecret");
+
+// Get access token
 $token_url = 'https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials';
 
 $ch = curl_init($token_url);
 curl_setopt($ch, CURLOPT_HTTPHEADER, ['Authorization: Basic ' . $credentials]);
 curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
 $response = curl_exec($ch);
+
 if (curl_errno($ch)) {
-    log_message('Token request curl error: ' . curl_error($ch));
-    echo json_encode(['success' => false, 'message' => 'Token request failed']);
+    log_message('Token CURL error: ' . curl_error($ch));
+    echo json_encode(['success' => false, 'message' => 'Failed to get access token']);
     exit;
 }
 curl_close($ch);
 
 $result = json_decode($response, true);
+
 if (!isset($result['access_token'])) {
-    log_message('Access token missing in response');
-    echo json_encode(['success' => false, 'message' => 'Access token generation failed']);
+    log_message('Access token missing: ' . $response);
+    echo json_encode(['success' => false, 'message' => 'Access token missing']);
     exit;
 }
 
 $access_token = $result['access_token'];
+
+// STK Push Request
 $stkPushUrl = 'https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest';
 
 $payload = [
@@ -90,7 +108,7 @@ $payload = [
     'Password' => $password,
     'Timestamp' => $timestamp,
     'TransactionType' => 'CustomerPayBillOnline',
-    'Amount' => $amount,
+    'Amount' => (int)$amount,
     'PartyA' => $phone,
     'PartyB' => $shortcode,
     'PhoneNumber' => $phone,
@@ -108,9 +126,10 @@ curl_setopt($ch, CURLOPT_POST, true);
 curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload));
 curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
 $response = curl_exec($ch);
+
 if (curl_errno($ch)) {
-    log_message('STK Push curl error: ' . curl_error($ch));
-    echo json_encode(['success' => false, 'message' => 'STK Push request failed']);
+    log_message('STK Push CURL error: ' . curl_error($ch));
+    echo json_encode(['success' => false, 'message' => 'Failed to send STK Push']);
     exit;
 }
 curl_close($ch);
@@ -118,10 +137,14 @@ curl_close($ch);
 $result = json_decode($response, true);
 
 if (isset($result['ResponseCode']) && $result['ResponseCode'] == '0') {
-    log_message('STK Push sent successfully for ' . $phone);
-    echo json_encode(['success' => true, 'message' => 'STK Push Sent']);
+    log_message("STK Push sent to $phone. CheckoutRequestID: " . $result['CheckoutRequestID']);
+    echo json_encode([
+        'success' => true,
+        'message' => 'STK Push sent successfully',
+        'checkoutRequestID' => $result['CheckoutRequestID']
+    ]);
 } else {
-    log_message('STK Push failed: ' . json_encode($result));
-    echo json_encode(['success' => false, 'message' => 'Failed to initiate STK Push']);
+    log_message('STK Push error: ' . json_encode($result));
+    echo json_encode(['success' => false, 'message' => 'STK Push failed', 'error' => $result]);
 }
 ?>
